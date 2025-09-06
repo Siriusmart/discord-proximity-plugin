@@ -95,8 +95,8 @@ interface VoiceState {
 }
 
 export default definePlugin({
-    name: "test plugin",
-    description: "Announces when users join, leave, or move voice channels via narrator",
+    name: "Discord Proximity",
+    description: "Proximity voice chat plugin for Discord.",
     authors: [Devs.Siriusmart],
 
     start: () => {
