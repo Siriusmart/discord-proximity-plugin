@@ -7,24 +7,44 @@ let whosThere = {}
 let whosThereReverse = {}
 let originalVolumes = {}
 
+// connection to game
+// undefined if not connected or closed
+// Websocket otherwise
 let ws;
-let isActive = false;
+// bindWS() is called with a generation
+// generation is incremented when a connection closes
+// if the global generation != the generation bindWS() is ran with
+// bindWS() quits recursively calling itself
+// so there are only one bindWS() recursively calling itself at any given moment
+let generation = 0;
 
 let localVolumeSetter = findByPropsLazy("setLocalVolume");
 let localVolumeGetter = findByPropsLazy("getLocalVolume");
 
+// undo everything the plugin has done
 function restore(): void {
+    // resets user volume to how it was before starting the connection
     for(let [user, volume] of Object.entries(originalVolumes)) {
         localVolumeSetter.setLocalVolume(user, volume)
     }
 
+    // clears this
     originalVolumes = {}
 
+    // close any opened connections
+    if(ws != undefined) {
+        ws.close()
+        ws = undefined
+    }
+
+    // unblocks settings-proto requests
     XMLHttpRequest.prototype.send = XMLHttpRequest.prototype.oldSend;
     XMLHttpRequest.prototype.open = XMLHttpRequest.prototype.oldOpen;
 }
 
+// runs after connection opened
 function connect(): void {
+    // blocks settings-proto requests
     XMLHttpRequest.prototype.oldOpen = XMLHttpRequest.prototype.open;
     XMLHttpRequest.prototype.oldSend = XMLHttpRequest.prototype.send;
 
@@ -42,9 +62,10 @@ function connect(): void {
     };
 }
 
-function bindWS(): void {
+function bindWS(localGen): void {
     const myId = UserStore.getCurrentUser().id;
-    if(isActive == false) return;
+    if(generation != localGen) return;
+    // no longer in VC
     if(whosThereReverse[myId] == undefined) return;
 
     try {
@@ -92,19 +113,21 @@ function bindWS(): void {
             }
         }
 
+        // retry in 10 seconds
         ws.onclose = ws.onerror = () => {
             if (ws.readyState === WebSocket.CLOSED) {
                 ws == undefined
                 restore();
-                setTimeout(bindWS, 10000);
+                setTimeout(() => bindWS(localGen), 10000);
             }
         }
     } catch(e) {
         ws = undefined
-        setTimeout(bindWS, 10000);
+        setTimeout(() => bindWS(localGen), 10000);
     }
 }
 
+// skidded from the TTS vc join announcer thing
 interface VoiceState {
     userId: string;
     channelId?: string;
@@ -121,15 +144,17 @@ export default definePlugin({
         authors: [Devs.Siriusmart],
 
     start: () => {
-        isActive = true;
-        bindWS();
+        generation++;
+        bindWS(generation);
     },
 
     stop: () => {
-        isActive = false;
+        generation++;
         restore();
     },
 
+    // dunno what this does, stolen from another plugin
+    // but it works, thats all that matters
     flux: {
         VOICE_STATE_UPDATES({ voiceStates }: { voiceStates: VoiceState[]; }) {
             const myId = UserStore.getCurrentUser().id;
@@ -137,14 +162,21 @@ export default definePlugin({
 
             if (ChannelStore.getChannel(myChanId!)?.type === 13 /* Stage Channel */) return;
 
+            // dunno why this loop is requried
+            // again i just copied their code
             for (const state of voiceStates) {
+                // state is any changes in VC states
                 if(state.channelId == null) {
+                    // this means someone has left the VC
                     try {
+                        // if the volume of this user has been modified, reset it to its original volume
                         if(originalVolumes[state.userId] != undefined) {
                             localVolumeSetter.setLocalVolume(state.userId, originalVolumes[state.userId])
                         }
 
                         delete whosThereReverse[state.userId]
+
+                        // remove user from the vc he left
                         if(state.oldChannelId != null) {
                             delete whosThere[state.oldChannelId][state.userId]
                             if(Object.keys(whosThere[state.oldChannelId]).length == 0) {
@@ -155,6 +187,7 @@ export default definePlugin({
                         console.error(e);
                     }
 
+                    // if you left the vc, close the connection and restore everything
                     if(state.userId == myId) {
                         if(ws != undefined) {
                             ws.close();
@@ -164,6 +197,8 @@ export default definePlugin({
                         restore();
                     }
                 } else {
+                    // if the user only moved channels
+                    // then remove him from his old channel
                     if(state.oldChannelId != null && state.oldChannelId != state.channelId) {
                         try {
                             delete whosThereReverse[state.userId]
@@ -176,8 +211,10 @@ export default definePlugin({
                     whosThere[state.channelId] ??= {};
                     whosThere[state.channelId][state.userId] = true;
 
-                    if(ws == undefined) {
-                        bindWS()
+                    // if you joined a vc, start the connection
+                    if(ws == undefined && state.userid == myId) {
+                        genreation++;
+                        bindWS(generation)
                     }
                 }
             }
